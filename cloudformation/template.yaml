@@ -1,0 +1,169 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for Tweet Processing Pipeline'
+
+Parameters:
+  EnvironmentName:
+    Description: Environment name (e.g., dev, prod)
+    Type: String
+    Default: dev
+  KinesisStreamName:
+    Description: Name for the Kinesis Stream
+    Type: String
+    Default: tweet-stream
+  S3RawBucketName:
+    Description: Name for the S3 bucket to store raw tweets
+    Type: String
+    Default: tweet-raw-data-${AWS::AccountId}-${AWS::Region}
+  S3ProcessedBucketName:
+    Description: Name for the S3 bucket to store processed tweets
+    Type: String
+    Default: tweet-processed-data-${AWS::AccountId}-${AWS::Region}
+  OpenSearchDomainName:
+    Description: Name for the OpenSearch domain
+    Type: String
+    Default: tweet-analysis
+
+Resources:
+  # S3 Buckets
+  RawDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref S3RawBucketName
+      LifecycleConfiguration:
+        Rules:
+          - Status: Enabled
+            ExpirationInDays: 90
+
+  ProcessedDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref S3ProcessedBucketName
+      LifecycleConfiguration:
+        Rules:
+          - Status: Enabled
+            ExpirationInDays: 180
+
+  # Kinesis Stream
+  TweetStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: !Ref KinesisStreamName
+      ShardCount: 1
+      RetentionPeriodHours: 24
+      StreamEncryption:
+        EncryptionType: KMS
+        KeyId: alias/aws/kinesis
+
+  # IAM Role for Lambda
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [lambda.amazonaws.com]
+            Action: ['sts:AssumeRole']
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: KinesisAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'kinesis:GetRecords'
+                  - 'kinesis:GetShardIterator'
+                  - 'kinesis:DescribeStream'
+                  - 'kinesis:ListStreams'
+                Resource: !GetAtt TweetStream.Arn
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3RawBucketName}/*'
+                  - !Sub 'arn:aws:s3:::${S3ProcessedBucketName}/*'
+        - PolicyName: OpenSearchAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'es:ESHttpPost'
+                  - 'es:ESHttpPut'
+                Resource: !Sub 'arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}/*'
+
+  # Lambda Function
+  TweetProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${EnvironmentName}-tweet-processor'
+      Description: 'Process tweets from Kinesis and store in S3/OpenSearch'
+      Runtime: python3.9
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          OPENSEARCH_HOST: !GetAtt OpenSearchDomain.DomainEndpoint
+          OPENSEARCH_INDEX: 'tweets'
+          S3_RAW_BUCKET: !Ref S3RawBucketName
+          S3_RESULTS_BUCKET: !Ref S3ProcessedBucketName
+      Code:
+        S3Bucket: !Sub '${EnvironmentName}-tweet-processor-code-${AWS::AccountId}'
+        S3Key: !Sub '${EnvironmentName}/tweet-processor.zip'
+
+  # Kinesis Event Source Mapping
+  KinesisEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 100
+      StartingPosition: LATEST
+      EventSourceArn: !GetAtt TweetStream.Arn
+      FunctionName: !Ref TweetProcessorFunction
+
+  # OpenSearch Domain
+  OpenSearchDomain:
+    Type: AWS::OpenSearchService::Domain
+    Properties:
+      DomainName: !Ref OpenSearchDomainName
+      EngineVersion: 'OpenSearch_1.3'
+      ClusterConfig:
+        InstanceType: 't3.small.search'
+        InstanceCount: 1
+        ZoneAwarenessEnabled: false
+      EBSOptions:
+        EBSEnabled: true
+        VolumeType: 'gp2'
+        VolumeSize: 10
+      AccessPolicies:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !GetAtt LambdaExecutionRole.Arn
+            Action: 'es:*'
+            Resource: !Sub 'arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}/*'
+
+Outputs:
+  KinesisStreamName:
+    Description: Name of the Kinesis Stream
+    Value: !Ref KinesisStreamName
+  RawDataBucketName:
+    Description: Name of the S3 bucket for raw data
+    Value: !Ref S3RawBucketName
+  ProcessedDataBucketName:
+    Description: Name of the S3 bucket for processed data
+    Value: !Ref S3ProcessedBucketName
+  OpenSearchDomainEndpoint:
+    Description: OpenSearch Domain Endpoint
+    Value: !GetAtt OpenSearchDomain.DomainEndpoint
