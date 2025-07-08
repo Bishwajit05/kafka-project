@@ -14,7 +14,10 @@ echo 'waiting for kafka to start...'
 sleep 10
 
 echo 'setup nltk...'
-source venv/bin/activate && python3 setup_nltk.py && pip3 install -r requirements.txt
+source venv/bin/activate 
+pip3 install -r requirements.txt
+python3 setup_nltk.py 
+
 
 echo 'starting producer...'
 tmux new-session -d -s producer
