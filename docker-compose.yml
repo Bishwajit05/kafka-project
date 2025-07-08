@@ -27,38 +27,38 @@ services:
     networks:
       - kafka-network
       
-  producer:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    depends_on:
-      - kafka
-    command: python3 /app/producer/producer.py
-    working_dir: /app
-    environment:
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
-    volumes:
-      - ./:/app
-    networks:
-      - kafka-network
-    restart: on-failure
+  # producer:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   depends_on:
+  #     - kafka
+  #   command: python3 /app/producer/producer.py
+  #   working_dir: /app
+  #   environment:
+  #     - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+  #   volumes:
+  #     - ./:/app
+  #   networks:
+  #     - kafka-network
+  #   restart: on-failure
 
-  consumer:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    depends_on:
-      - kafka
-      - producer
-    command: python3 /app/consumer/consumer.py
-    working_dir: /app
-    environment:
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
-    volumes:
-      - ./:/app
-    networks:
-      - kafka-network
-    restart: on-failure
+  # consumer:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   depends_on:
+  #     - kafka
+  #     - producer
+  #   command: python3 /app/consumer/consumer.py
+  #   working_dir: /app
+  #   environment:
+  #     - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+  #   volumes:
+  #     - ./:/app
+  #   networks:
+  #     - kafka-network
+  #   restart: on-failure
 
 networks:
   kafka-network:
