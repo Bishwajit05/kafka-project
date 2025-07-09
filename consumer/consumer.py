@@ -38,7 +38,7 @@ from pyspark.sql.types import (
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 import logging
-from .s3_upload_helper import upload_file_to_s3
+from s3_upload_helper import upload_file_to_s3
 from nltk.corpus import stopwords
 
 stopword_set = set(stopwords.words("english"))
