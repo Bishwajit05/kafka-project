@@ -17,9 +17,14 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import nltk
 import os
+import json
+import logging
 from datetime import datetime
+from kafka import KafkaConsumer
+from kafka.errors import NoBrokersAvailable, KafkaError
 from consumer.s3_upload_helper import upload_file_to_s3
 from nltk.corpus import stopwords
+from typing import List, Dict, Any, Optional
 
 # Download required NLTK data
 nltk.download("punkt", quiet=True)
@@ -241,23 +246,76 @@ class TextAnalyzer:
         return results
 
 
-def load_sample_texts(num_texts: int = 1000) -> List[str]:
-    """Load sample text data for testing."""
-    # In a real scenario, this would load from a file or API
-    sample_texts = [
-        "This is a sample tweet about #BigData and #Analytics. I love data science!",
-        "Feeling excited about my new project! #coding #python",
-        "The weather is nice today. #sunny #summer",
-        "Just finished reading a great book about machine learning. #AI #ML",
-        "Working on a new data pipeline with Kafka and Spark. #BigData #Streaming",
-        "This is terrible! The service was awful. #disappointed",
-        "Neutral feeling about this product. It's okay, I guess.",
-        "Amazing results from our latest experiment! #success #dataScience",
-        "The new update broke my code. #frustrated #bug",
-        "Learning about distributed systems and MapReduce. #distributedComputing",
-    ]
-    # Repeat the sample texts to reach the desired number
-    return (sample_texts * (num_texts // len(sample_texts) + 1))[:num_texts]
+def create_kafka_consumer(topic: str, group_id: str = 'mapreduce_consumer') -> Optional[KafkaConsumer]:
+    """
+    Create a Kafka consumer with the project's standard configuration.
+    
+    Args:
+        topic: Kafka topic to consume from
+        group_id: Consumer group ID
+        
+    Returns:
+        KafkaConsumer instance or None if creation fails
+    """
+    kafka_server = os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
+    logger.info(f"Connecting to Kafka at {kafka_server}")
+    
+    try:
+        consumer = KafkaConsumer(
+            topic,
+            bootstrap_servers=kafka_server.split(','),
+            auto_offset_reset='earliest',
+            enable_auto_commit=True,
+            group_id=group_id,
+            value_deserializer=lambda v: json.loads(v.decode('utf-8')),
+            consumer_timeout_ms=10000  # 10 seconds timeout
+        )
+        logger.info(f"Successfully connected to Kafka topic: {topic}")
+        return consumer
+    except NoBrokersAvailable:
+        logger.error("No Kafka brokers available. Please check your Kafka setup.")
+    except Exception as e:
+        logger.error(f"Error creating Kafka consumer: {e}")
+    return None
+
+def consume_messages(consumer: KafkaConsumer, max_messages: int = 1000) -> List[str]:
+    """
+    Consume messages from a Kafka consumer.
+    
+    Args:
+        consumer: Configured KafkaConsumer instance
+        max_messages: Maximum number of messages to consume
+        
+    Returns:
+        List of text messages
+    """
+    messages = []
+    try:
+        for i, message in enumerate(consumer):
+            if i >= max_messages:
+                break
+                
+            try:
+                # Extract text from message (matches producer's format)
+                if isinstance(message.value, dict):
+                    msg_text = message.value.get('text') or message.value.get('clean_text')
+                    if msg_text:
+                        messages.append(msg_text)
+                elif isinstance(message.value, str):
+                    messages.append(message.value)
+                
+                if (i + 1) % 100 == 0:
+                    logger.info(f"Consumed {i + 1} messages...")
+                    
+            except Exception as e:
+                logger.error(f"Error processing message: {e}")
+                continue
+                
+    except Exception as e:
+        logger.error(f"Error consuming messages: {e}")
+    
+    logger.info(f"Successfully consumed {len(messages)} messages from Kafka")
+    return messages
 
 
 def run_performance_test(
@@ -363,100 +421,90 @@ def plot_comparison(
 
 
 def main():
-    # S3 Configuration
+    # Configuration
     s3_bucket = os.getenv("S3_BUCKET_NAME")  # Set your S3 bucket name in environment variables
+    kafka_topic = os.getenv("KAFKA_TOPIC", "text_data")  # Match producer's default topic
+    max_messages = int(os.getenv("MAX_MESSAGES", "1000"))
     s3_prefix = "mapreduce_analysis"
     upload_to_s3 = bool(s3_bucket)
     
+    # Log configuration
     if upload_to_s3:
         logger.info(f"S3 uploads are ENABLED. Files will be uploaded to s3://{s3_bucket}/{s3_prefix}")
     else:
         logger.warning("S3_BUCKET_NAME environment variable not set. S3 uploads are DISABLED.")
-
-    # Test parameters
-    sample_sizes = [50000, 100000]  # Number of texts to process for each test
-    worker_counts = [2, 4, 8]  # Number of workers to test
-    all_results = []
-
-    for num_texts in sample_sizes:
+    
+    # Create Kafka consumer
+    consumer = create_kafka_consumer(kafka_topic)
+    if not consumer:
+        logger.error("Failed to create Kafka consumer. Exiting.")
+        return
+    
+    try:
+        # Consume messages
+        logger.info(f"Consuming up to {max_messages} messages from Kafka topic '{kafka_topic}'...")
+        texts = consume_messages(consumer, max_messages)
+        
+        if not texts:
+            logger.warning("No messages received from Kafka. Using sample data instead.")
+            texts = [
+                "This is a sample tweet about #BigData and #Analytics. I love data science!",
+                "Feeling excited about my new project! #coding #python",
+                "The weather is nice today. #sunny #summer",
+                "Just finished reading a great book about machine learning. #AI #ML",
+                "Working on a new data pipeline with Kafka and Spark. #BigData #Streaming"
+            ]
+        
+        logger.info(f"Processing {len(texts)} messages")
+        
+        # Process the consumed messages
         logger.info(f"\n{'='*50}")
-        logger.info(f"TESTING WITH SAMPLE SIZE: {num_texts}")
+        logger.info(f"PROCESSING MESSAGES")
         logger.info(f"{'='*50}")
-
-        # Generate sample data
-        logger.info(f"Generating {num_texts} sample texts...")
-        texts = load_sample_texts(num_texts)
-
-        results = []
-
+        
+        # Test parameters
+        worker_counts = [2, 4, 8]  # Number of workers to test
+        all_results = []
+        
         # Run sequential analysis
         logger.info("Running sequential analysis...")
-        seq_analyzer = TextAnalyzer(sequential=True)
-        seq_results = run_performance_test(
-            seq_analyzer, 
+        sequential_analyzer = TextAnalyzer(sequential=True)
+        sequential_results = run_performance_test(
+            sequential_analyzer, 
             texts,
             upload_to_s3=upload_to_s3,
             s3_bucket=s3_bucket,
             s3_prefix=s3_prefix
         )
-        results.append(seq_results)
-        logger.info(
-            f"Sequential analysis completed in {seq_results['execution_time']:.2f} seconds"
-        )
-
+        all_results.append(sequential_results)
+        
         # Run parallel analysis with different worker counts
         for num_workers in worker_counts:
             logger.info(f"\nRunning parallel analysis with {num_workers} workers...")
-            par_analyzer = TextAnalyzer(num_workers=num_workers, sequential=False)
-            par_results = run_performance_test(
-                par_analyzer, 
+            parallel_analyzer = TextAnalyzer(num_workers=num_workers, sequential=False)
+            parallel_results = run_performance_test(
+                parallel_analyzer,
                 texts,
                 upload_to_s3=upload_to_s3,
                 s3_bucket=s3_bucket,
                 s3_prefix=s3_prefix
             )
-            results.append(par_results)
-            logger.info(
-                f"Parallel analysis with {num_workers} workers completed in {par_results['execution_time']:.2f} seconds"
-            )
-
-            # Calculate and log speedup
-            if seq_results["success"] and par_results["success"]:
-                speedup = seq_results["execution_time"] / par_results["execution_time"]
-                logger.info(f"Speedup with {num_workers} workers: {speedup:.2f}x")
-
-        # Generate comparison plots for this sample size
-        logger.info("\nGenerating performance comparison...")
-        output_file = f"performance_comparison_{num_texts}.png"
-        df = plot_comparison(results, output_file)
-
-        if df is not None and not df.empty:
-            logger.info("\nPerformance Summary:")
-            summary = df[
-                [
-                    "analyzer_type",
-                    "num_workers",
-                    "execution_time",
-                    "word_count_time",
-                    "sentiment_time",
-                    "hashtag_time",
-                ]
-            ]
-            print(summary.to_string(index=False))
-
-            # Calculate and print speedup
-            if len(df) > 1:
-                base_time = df[df["analyzer_type"] == "sequential"][
-                    "execution_time"
-                ].values[0]
-                for _, row in df[df["analyzer_type"] == "parallel"].iterrows():
-                    speedup = base_time / row["execution_time"]
-                    logger.info(
-                        f"Speedup with {row['num_workers']} workers: {speedup:.2f}x"
-                    )
-
-        all_results.extend(results)
-
+            all_results.append(parallel_results)
+        
+        # Generate and save comparison plot
+        plot_comparison(
+            all_results,
+            upload_to_s3=upload_to_s3,
+            s3_bucket=s3_bucket,
+            s3_prefix=s3_prefix
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in main processing: {e}")
+    finally:
+        if consumer:
+            consumer.close()
+            logger.info("Kafka consumer closed")
 
 if __name__ == "__main__":
     main()
