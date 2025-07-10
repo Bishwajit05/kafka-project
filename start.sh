@@ -5,6 +5,10 @@ PARALLEL_COUNT=${1:-1}
 
 echo "Running with $PARALLEL_COUNT parallel processes for both producer and consumer"
 
+echo "Removing previous data"
+
+rm -rf final_checkpoint
+
 echo 'killing existing tmux sessions...'
 # Kill any existing tmux sessions
 for i in $(seq 1 $PARALLEL_COUNT); do
