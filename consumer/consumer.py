@@ -38,7 +38,7 @@ from pyspark.sql.types import (
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 import logging
-from s3_upload_helper import upload_file_to_s3
+from s3_upload_helper import s3_uploader
 from nltk.corpus import stopwords
 
 stopword_set = set(stopwords.words("english"))
@@ -182,7 +182,9 @@ def process_unified_batch(df, epoch_id):
         )
 
     # Upload CSV to S3 after every batch
-    upload_file_to_s3(csv_file, "consumer-results", "results/performance_results.csv")
+    s3_uploader.upload_file(
+        csv_file, "consumer-results", "results/performance_results.csv"
+    )
 
     print(
         f"--- Batch {epoch_id} processing finished in {batch_duration:.2f} seconds ---"
