@@ -22,7 +22,7 @@ from pyspark.sql.functions import (
     from_unixtime,
     unix_timestamp,
     to_timestamp,
-    date_format
+    date_format,
 )
 from pyspark.sql.types import (
     StructType as SparkStructType,
@@ -35,7 +35,7 @@ from pyspark.sql.types import (
 )
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 from nltk.corpus import stopwords
-from s3_upload_helper import transfer_to_cloud_storage
+from s3_upload_helper import s3_uploader
 
 # Configure Spark environment
 os.environ["PYSPARK_PYTHON"] = sys.executable
@@ -82,45 +82,47 @@ def batch_analysis(df, batch_num):
     """
     start_time = time.time()
     logger.info(f"[Batch {batch_num}] Analysis started.")
-    
+
     # Persist the DataFrame as it will be used multiple times
     df = df.persist()
     count = df.count()
-    
+
     if count < 1:
         logger.info("Batch is empty. Skipping...")
         df.unpersist()
         return
-        
+
     logger.info(f"Processing {count} records...")
-    
+
     # Calculate latency if timestamp is present
     avg_latency = None
     if "timestamp" in df.columns:
         latency_df = df.withColumn("latency", (time.time() - spark_col("timestamp")))
         avg_latency = latency_df.agg(spark_avg("latency")).collect()[0][0]
         logger.info(f"Average latency: {avg_latency:.2f} s")
-        
+
         # Add processing time for time window analysis
         enriched_df = df.withColumn("proc_time", spark_now())
     else:
         enriched_df = df
-    
+
     # Sentiment analysis
     if "Review" in df.columns:
         df = df.withColumn("sentiment", sentiment_udf(spark_col("Review")))
         avg_sentiment = df.agg(spark_avg("sentiment")).collect()[0][0]
         logger.info(f"Mean sentiment: {avg_sentiment:.3f}")
-    
+
     # Trending terms analysis
     if "Review" in df.columns:
         # Split reviews into words and filter stopwords
         words_df = df.select(
-            spark_explode(spark_split(spark_lower(spark_col("Review")), "\\W+")).alias("word")
+            spark_explode(spark_split(spark_lower(spark_col("Review")), "\\W+")).alias(
+                "word"
+            )
         ).filter("word != ''")  # Remove empty strings
-        
+
         words_df = words_df.filter(remove_stopwords_udf(spark_col("word")))
-        
+
         # Get top 10 words
         top_words = (
             words_df.groupBy("word")
@@ -130,14 +132,14 @@ def batch_analysis(df, batch_num):
             .collect()
         )
         logger.info(
-            "Top 10 words: " + ", ".join(f"{row['word']}({row['count']})" for row in top_words)
+            "Top 10 words: "
+            + ", ".join(f"{row['word']}({row['count']})" for row in top_words)
         )
-        
+
         # Time window analysis (5-minute windows)
         if "proc_time" in df.columns:
             windowed_words = (
-                words_df
-                .withColumn("window", spark_window("proc_time", "5 minutes"))
+                words_df.withColumn("window", spark_window("proc_time", "5 minutes"))
                 .groupBy("window", "word")
                 .count()
                 .orderBy(spark_desc("count"))
@@ -145,48 +147,52 @@ def batch_analysis(df, batch_num):
             )
             logger.info("Top 5 trending words in 5-minute windows:")
             windowed_words.show(truncate=False)
-    
+
     # Calculate metrics
     elapsed = time.time() - start_time
     throughput = count / elapsed if elapsed > 0 else 0
-    
+
     # Save batch to a single CSV file
     output_path = "all_batches_results.csv"
     try:
         # Check if file exists to determine if we need to write header
-        write_header = not os.path.exists(output_path) or os.path.getsize(output_path) == 0
-        
+        write_header = (
+            not os.path.exists(output_path) or os.path.getsize(output_path) == 0
+        )
+
         # Append data to the CSV file
         df.toPandas().to_csv(
-            output_path, 
-            mode='a',  # append mode
+            output_path,
+            mode="a",  # append mode
             header=write_header,  # write header only if file doesn't exist
-            index=False
+            index=False,
         )
-        
+
         # Upload to cloud storage in the batch_results bucket
         s3_path = f"batch_results/{output_path}"
-        transfer_to_cloud_storage(
-            output_path, 
-            os.environ.get("S3_BUCKET", "batch_results"), 
-            s3_path
+        s3_uploader.upload_file(
+            output_path, os.environ.get("S3_BUCKET", "batch_results"), s3_path
         )
     except Exception as e:
         logger.error(f"Failed to save or upload results: {str(e)}")
-    
+
     # Log metrics to CSV
     metrics_file = "airline_customer_review_metrics.csv"
-    write_header = not os.path.exists(metrics_file) or os.path.getsize(metrics_file) == 0
-    
+    write_header = (
+        not os.path.exists(metrics_file) or os.path.getsize(metrics_file) == 0
+    )
+
     try:
         with open(metrics_file, "a", newline="") as out_csv:
             writer = csv.writer(out_csv)
             if write_header:
-                writer.writerow(["batch_num", "num_records", "elapsed", "throughput", "avg_latency"])
+                writer.writerow(
+                    ["batch_num", "num_records", "elapsed", "throughput", "avg_latency"]
+                )
             writer.writerow([batch_num, count, elapsed, throughput, avg_latency])
     except Exception as e:
         logger.error(f"Failed to write metrics: {str(e)}")
-    
+
     # Clean up
     df.unpersist()
     logger.info(f"[Batch {batch_num}] Analysis complete in {elapsed:.2f}s.")
@@ -195,7 +201,7 @@ def batch_analysis(df, batch_num):
         "num_records": count,
         "elapsed": elapsed,
         "throughput": throughput,
-        "avg_latency": avg_latency
+        "avg_latency": avg_latency,
     }
 
 
