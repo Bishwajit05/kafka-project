@@ -290,12 +290,12 @@ def process_with_mapreduce(worker_count, data, sequential=False):
         # Sequential processing
         results = []
         for chunk in chunks:
-            results.extend(process_chunk(chunk, sia))
+            results.extend(process_batch_chunk(chunk, sia))
     else:
         # Parallel processing with multiprocessing
         with ProcessPoolExecutor(max_workers=worker_count) as executor:
             # Use partial to set the sia parameter
-            process_func = partial(process_chunk, sia=sia)
+            process_func = partial(process_batch_chunk, sia=sia)
             # Execute the map phase in parallel
             map_results = executor.map(process_func, chunks)
             # Combine results (reduce phase)
@@ -831,7 +831,7 @@ def visualize_results(results):
             "Visualizations saved to load_test_results directory and uploaded to S3"
         )
         logger.info(
-            "S3 Upload paths: s3://{}/{}/".format(bucket_name, f"load_test_results/{timestamp}")
+            "S3 Upload paths: s3://{}/{}/".format(bucket_name, "load_test_results/{}".format(timestamp))
         )
     else:
         logger.info("Visualizations saved to load_test_results directory")
