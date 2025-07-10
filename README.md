@@ -53,6 +53,37 @@ This repository provides a robust, real-time pipeline for ingesting, processing,
 
 ### Running the Pipeline
 
+#### Option 1: Using the start.sh script (Recommended)
+
+The start.sh script automates the setup and running of multiple producer and consumer instances in parallel using tmux sessions:
+
+```bash
+# Run with default 1 parallel instance for both producer and consumer
+./start.sh
+
+# Run with a specific number of parallel instances (e.g., 3)
+./start.sh 3
+```
+
+This script will:
+- Clean up previous data and tmux sessions
+- Start Kafka using Docker Compose
+- Set up the Python virtual environment and install dependencies
+- Launch the specified number of producer and consumer instances in tmux sessions
+- Automatically attach to the first consumer session
+
+To view other sessions:
+```bash
+# List all tmux sessions
+tmux ls
+
+# Attach to a specific session
+tmux attach -t producer_1
+tmux attach -t consumer_2
+```
+
+#### Option 2: Manual Execution
+
 - **Start the producer to stream news articles:**
   ```bash
   python producer/producer.py
@@ -141,6 +172,7 @@ kafka-project/
 │   └── consumer.py       # Spark Streaming consumer for processing
 ├── setup_nltk.py        # NLTK data setup script
 ├── test_setup.py        # System setup verification
+├── start.sh             # Script to run multiple producer/consumer instances
 ├── docker-compose.yml    # Docker configuration for all services
 ├── Dockerfile           # Single Dockerfile for both producer and consumer
 └── requirements.txt      # Python dependencies
@@ -205,11 +237,29 @@ The application outputs processing results to the console in real-time, showing:
 ## Stopping the Application
 
 ### Local Execution
+
+#### If using start.sh script:
+1. Exit the tmux session with `Ctrl+B` then `D` to detach
+2. Kill all tmux sessions:
+```bash
+# Kill all tmux sessions for producers
+for i in $(seq 1 N); do tmux kill-session -t producer_$i; done
+
+# Kill all tmux sessions for consumers
+for i in $(seq 1 N); do tmux kill-session -t consumer_$i; done
+```
+Replace `N` with the number of parallel instances you started.
+
+3. Stop Kafka:
+```bash
+docker compose down
+```
+
+#### If running manually:
 1. Stop the producer and consumer applications (Ctrl+C)
 2. Stop Kafka:
-
 ```bash
-docker-compose down
+docker compose down
 ```
 
 ### Docker Execution
@@ -246,6 +296,11 @@ docker ps
 ```bash
 python test_setup.py
 ```
+
+5. If using the start.sh script and encountering issues:
+   - Make sure the script is executable: `chmod +x start.sh`
+   - Check tmux is installed: `sudo apt install tmux` (Ubuntu/Debian) or `brew install tmux` (macOS)
+   - View tmux sessions: `tmux ls`
 
 ### Docker Setup Issues
 
