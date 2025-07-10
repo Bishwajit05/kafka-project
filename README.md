@@ -126,6 +126,8 @@ kafka-project/
 
 **IMPORTANT**: The consumer application relies on the NLP data downloaded in the setup steps. Ensure you have run `python setup_nltk.py` successfully before starting the consumer.
 
+#### Option 1: Manual Execution
+
 1. **Start the Consumer**:
    Open a terminal and run the consumer application. It will wait for data from Kafka.
 
@@ -138,6 +140,27 @@ kafka-project/
    ```bash
    python producer/producer.py
    ```
+
+#### Option 2: Using the start.sh Script
+
+The project includes a convenient `start.sh` script that automates the startup process and supports parallel execution:
+
+```bash
+# Run with default 1 instance of producer and consumer
+./start.sh
+
+# Run with multiple parallel instances (e.g., 3)
+./start.sh 3
+```
+
+This script:
+- Kills any existing tmux sessions
+- Starts Kafka using Docker Compose
+- Sets up the NLTK environment
+- Launches the specified number of producer and consumer instances in separate tmux sessions
+- Automatically attaches to the first consumer session
+
+This is particularly useful for EC2 deployments where you need to run multiple parallel instances to increase throughput.
 
 ### Docker Execution
 

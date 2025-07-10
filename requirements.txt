@@ -11,4 +11,4 @@ numpy==1.24.3
 textblob==0.17.1
 mrjob==0.7.4
 kaggle==1.5.13
-
+boto3==1.39.4
