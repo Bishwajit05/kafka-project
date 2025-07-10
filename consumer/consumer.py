@@ -169,9 +169,9 @@ def batch_analysis(df, batch_num):
         )
 
         # Upload to cloud storage in the batch_results bucket
-        s3_path = f"batch_results/{output_path}"
+        s3_path = f"batch-results/{output_path}"
         s3_uploader.upload_file(
-            output_path, os.environ.get("S3_BUCKET", "batch_results"), s3_path
+            output_path, os.environ.get("S3_BUCKET", "batch-results"), s3_path
         )
     except Exception as e:
         logger.error(f"Failed to save or upload results: {str(e)}")
