@@ -1,9 +1,10 @@
 kafka-python
 pandas
-pyspark==3.2.4
+pyspark>=3.4.0
 requests
 nltk==3.8.1
-matplotlib==3.8.3
-seaborn==0.13.2
+matplotlib>=3.9.0
+seaborn>=0.13.2
 kagglehub
-python-dotenv==1.0.1 
+python-dotenv==1.0.1
+boto3>=1.35.0
