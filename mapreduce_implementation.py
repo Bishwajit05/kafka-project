@@ -321,6 +321,7 @@ def consume_messages(consumer: KafkaConsumer, max_messages: int = 1000) -> List[
 def run_performance_test(
     text_analyzer: TextAnalyzer, 
     texts: List[str],
+    baseline_time: float = None,
     upload_to_s3: bool = True,
     s3_bucket: str = None,
     s3_prefix: str = "mapreduce_analysis"
@@ -328,11 +329,34 @@ def run_performance_test(
     """Run performance test with the given text analyzer."""
     start_time = time.time()
     results = text_analyzer.run_analysis(texts)
-    results["execution_time"] = time.time() - start_time
+    execution_time = time.time() - start_time
+    results["execution_time"] = execution_time
     results["analyzer_type"] = "sequential" if text_analyzer.sequential else "parallel"
-    results["num_workers"] = (
-        1 if text_analyzer.sequential else text_analyzer.map_reduce.num_workers
-    )
+    num_workers = 1 if text_analyzer.sequential else text_analyzer.map_reduce.num_workers
+    results["num_workers"] = num_workers
+    
+    # Calculate additional metrics similar to performance_comparison.py
+    num_documents = results["num_documents"]
+    
+    # 1. Throughput (documents/second)
+    results["throughput"] = num_documents / execution_time if execution_time > 0 else 0
+    
+    # 2. Average latency (seconds/document)
+    results["latency"] = execution_time / num_documents if num_documents > 0 else 0
+    
+    # 3. Speedup (if baseline_time is provided)
+    if baseline_time and baseline_time > 0:
+        results["speedup"] = baseline_time / execution_time
+    
+    # 4. Efficiency (Speedup / Number of Cores) as percentage
+    if "speedup" in results and num_workers > 1:
+        results["efficiency"] = (results["speedup"] / num_workers) * 100
+    
+    # Task-specific throughputs
+    for task in ["word_count", "sentiment", "hashtag"]:
+        task_time = results.get(f"{task}_time", 0)
+        if task_time > 0:
+            results[f"{task}_throughput"] = num_documents / task_time
     
     # Save results to CSV and upload to S3 if enabled
     if upload_to_s3 and s3_bucket:
@@ -374,11 +398,12 @@ def plot_comparison(
     if len(df) == 0:
         logger.warning("No successful runs to plot")
         return
+    
+    # Create enhanced visualization with 4 subplots (similar to performance_comparison.py)
+    plt.figure(figsize=(14, 10))
 
-    # Plot 1: Execution time comparison
-    plt.figure(figsize=(12, 5))
-
-    plt.subplot(1, 2, 1)
+    # 1. Execution time comparison by task
+    plt.subplot(2, 2, 1)
     for _, row in df.iterrows():
         label = f"{row['analyzer_type'].title()} ({row['num_workers']} workers)"
         times = {
@@ -392,31 +417,100 @@ def plot_comparison(
     plt.ylabel("Time (seconds)")
     plt.xticks(rotation=45)
     plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.7)
+
+    # 2. Speedup (Sequential / Parallel) if available
+    plt.subplot(2, 2, 2)
+    if 'speedup' in df.columns and any(~df['speedup'].isna()):
+        plt.bar(df['analyzer_type'] + ' (' + df['num_workers'].astype(str) + ' workers)', 
+                df['speedup'], color='g')
+        plt.axhline(y=1, color='r', linestyle='--', label='Baseline (1x)')
+        plt.title('Speedup (Sequential / Parallel)')
+        plt.ylabel('Speedup (x)')
+        plt.xlabel('Processing Method')
+        plt.grid(True, linestyle='--', alpha=0.7)
+    else:
+        plt.text(0.5, 0.5, 'Speedup metrics not available\n(need baseline comparison)', 
+                ha='center', va='center', fontsize=12)
+        plt.title('Speedup (Sequential / Parallel)')
+        plt.xticks([])
+        plt.yticks([])
+
+    # 3. Throughput Comparison (documents/second)
+    plt.subplot(2, 2, 3)
+    if 'throughput' in df.columns:
+        throughputs = []
+        labels = []
+        for _, row in df.iterrows():
+            label = f"{row['analyzer_type'].title()} ({row['num_workers']} workers)"
+            labels.append(label)
+            throughputs.append(row['throughput'])
+        
+        plt.bar(labels, throughputs, color='b')
+        plt.title('Throughput Comparison')
+        plt.xlabel('Processing Method')
+        plt.ylabel('Documents Processed per Second')
+        if max(throughputs) / (min(throughputs) + 0.001) > 10:  # If big difference, use log scale
+            plt.yscale('log')
+        plt.grid(True, linestyle='--', alpha=0.7)
+    else:
+        plt.text(0.5, 0.5, 'Throughput metrics not available', ha='center', va='center', fontsize=12)
+        plt.title('Throughput Comparison')
+        plt.xticks([])
+        plt.yticks([])
+
+    # 4. Efficiency (if available) or Latency
+    plt.subplot(2, 2, 4)
+    if 'efficiency' in df.columns and any(~df['efficiency'].isna()):
+        # Efficiency plot (similar to performance_comparison.py)
+        plt.bar(df['analyzer_type'] + ' (' + df['num_workers'].astype(str) + ' workers)', 
+                df['efficiency'], color='m')
+        plt.axhline(y=100, color='r', linestyle='--', label='Ideal (100%)')
+        plt.title('Parallel Efficiency')
+        plt.xlabel('Processing Method')
+        plt.ylabel('Efficiency (%)')
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.7)
+    elif 'latency' in df.columns:
+        # Latency plot (alternative if efficiency not available)
+        plt.bar(df['analyzer_type'] + ' (' + df['num_workers'].astype(str) + ' workers)', 
+                df['latency'] * 1000, color='r')  # Convert to milliseconds
+        plt.title('Average Processing Latency')
+        plt.xlabel('Processing Method')
+        plt.ylabel('Latency (ms/document)')
+        plt.grid(True, linestyle='--', alpha=0.7)
+    else:
+        plt.text(0.5, 0.5, 'Efficiency/Latency metrics not available', ha='center', va='center', fontsize=12)
+        plt.title('Parallel Efficiency')
+        plt.xticks([])
+        plt.yticks([])
+
     plt.tight_layout()
-
-    # Plot 2: Total execution time
-    plt.subplot(1, 2, 2)
-    for _, row in df.iterrows():
-        label = f"{row['analyzer_type'].title()} ({row['num_workers']} workers)"
-        plt.bar(label, row["execution_time"], alpha=0.6)
-
-    plt.title("Total Execution Time")
-    plt.ylabel("Time (seconds)")
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-
-    plt.savefig(output_file)
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
     plt.close()
-    logger.info(f"Saved comparison plot to {output_file}")
+    logger.info(f"Saved enhanced comparison plot to {output_file}")
+    
+    # Save results to CSV with detailed metrics
+    base_name = output_file.replace(".png", "")
+    csv_file = f"{base_name}_detailed_results.csv"
+    df.to_csv(csv_file, index=False)
+    logger.info(f"Saved detailed results to {csv_file}")
     
     if upload_to_s3 and s3_bucket:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        s3_key = f"{s3_prefix}/performance/{timestamp}_{os.path.basename(output_file)}"
-        upload_file_to_s3(output_file, s3_bucket, s3_key)
-        
-    # Save results to CSV
-    base_name = output_file.replace(".png", "")
-    df.to_csv(f"{base_name}_results.csv", index=False)
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # Upload plot to S3
+            s3_plot_key = f"{s3_prefix}/performance/{timestamp}_{os.path.basename(output_file)}"
+            upload_file_to_s3(output_file, s3_bucket, s3_plot_key)
+            logger.info(f"Uploaded plot to s3://{s3_bucket}/{s3_plot_key}")
+            
+            # Upload CSV to S3
+            s3_csv_key = f"{s3_prefix}/performance/{timestamp}_{os.path.basename(csv_file)}"
+            upload_file_to_s3(csv_file, s3_bucket, s3_csv_key)
+            logger.info(f"Uploaded detailed results to s3://{s3_bucket}/{s3_csv_key}")
+        except Exception as e:
+            logger.error(f"Failed to upload results to S3: {e}")
+    
     return df
 
 
@@ -466,38 +560,64 @@ def main():
         worker_counts = [2, 4, 8]  # Number of workers to test
         all_results = []
         
-        # Run sequential analysis
+        # Run sequential analysis (will be used as baseline for speedup calculations)
         logger.info("Running sequential analysis...")
-        sequential_analyzer = TextAnalyzer(sequential=True)
-        sequential_results = run_performance_test(
-            sequential_analyzer, 
-            texts,
-            upload_to_s3=upload_to_s3,
-            s3_bucket=s3_bucket,
+        seq_analyzer = TextAnalyzer(sequential=True)
+        seq_results = run_performance_test(
+            seq_analyzer, texts, baseline_time=None, upload_to_s3=False, s3_bucket=s3_bucket
+        )
+        all_results.append(seq_results)
+        
+        # Store sequential time as baseline for speedup calculations
+        baseline_execution_time = seq_results["execution_time"]
+        logger.info(f"Sequential execution time: {baseline_execution_time:.2f} seconds")
+
+        # Run parallel analysis with default number of workers
+        logger.info("Running parallel analysis...")
+        par_analyzer = TextAnalyzer(sequential=False)
+        par_results = run_performance_test(
+            par_analyzer, texts, baseline_time=baseline_execution_time, 
+            upload_to_s3=False, s3_bucket=s3_bucket,
             s3_prefix=s3_prefix
         )
-        all_results.append(sequential_results)
+        all_results.append(par_results)
         
-        # Run parallel analysis with different worker counts
-        for num_workers in worker_counts:
-            logger.info(f"\nRunning parallel analysis with {num_workers} workers...")
-            parallel_analyzer = TextAnalyzer(num_workers=num_workers, sequential=False)
-            parallel_results = run_performance_test(
-                parallel_analyzer,
-                texts,
-                upload_to_s3=upload_to_s3,
-                s3_bucket=s3_bucket,
-                s3_prefix=s3_prefix
-            )
-            all_results.append(parallel_results)
-        
-        # Generate and save comparison plot
+        # Calculate and log speedup metrics
+        if par_results.get("speedup"):
+            logger.info(f"Achieved speedup: {par_results['speedup']:.2f}x with {par_results['num_workers']} workers")
+            if "efficiency" in par_results:
+                logger.info(f"Parallel efficiency: {par_results['efficiency']:.1f}%")
+
+        # Try with different worker counts to compare scaling if system has multiple cores
+        available_cores = cpu_count()
+        if available_cores > 2:
+            # Test with various worker configurations that differ from default
+            test_worker_counts = []
+            if 2 != par_analyzer.map_reduce.num_workers:
+                test_worker_counts.append(2)
+            if available_cores // 2 != par_analyzer.map_reduce.num_workers and available_cores // 2 > 1:
+                test_worker_counts.append(available_cores // 2)
+            if available_cores != par_analyzer.map_reduce.num_workers:
+                test_worker_counts.append(available_cores)
+            
+            for worker_count in test_worker_counts:
+                logger.info(f"Running parallel analysis with {worker_count} workers...")
+                scaling_analyzer = TextAnalyzer(sequential=False, num_workers=worker_count)
+                scaling_results = run_performance_test(
+                    scaling_analyzer, texts, baseline_time=baseline_execution_time,
+                    upload_to_s3=False, s3_bucket=s3_bucket, s3_prefix=s3_prefix
+                )
+                all_results.append(scaling_results)
+                logger.info(f"Workers: {worker_count}, Speedup: {scaling_results.get('speedup', 0):.2f}x")
+
+        # Generate plots and save results
         plot_comparison(
-            all_results,
-            upload_to_s3=upload_to_s3,
-            s3_bucket=s3_bucket,
+            all_results, 
+            upload_to_s3=upload_to_s3, 
+            s3_bucket=s3_bucket, 
             s3_prefix=s3_prefix
         )
+        logger.info("Performance comparison completed successfully")
         
     except Exception as e:
         logger.error(f"Error in main processing: {e}")
